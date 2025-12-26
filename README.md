@@ -6,7 +6,7 @@ This project reads an Excel workbook where the third row contains column headers
 
 Key features
 
-- Read Excel files using the third row (row index 2) as column headers
+- Read Excel files using the third row (row index 2) as column headers. Can be changed in the code at pd.read_excel function.
 - Clean and normalize column names for SQL compatibility
 - Heuristic based inference of SQL column types
 - Chunked uploads to avoid large memory and query parameter issues
@@ -21,8 +21,9 @@ Good use cases
 
 Prerequisites
 
-- Python 3.8 or newer
-- PostgreSQL database accessible from your environment
+* Python 3.8 or newer
+* PostgreSQL database accessible from your environment
+    * Setting up and getting familiar with PgAdmin is recommended
 
 Required Python packages
 
@@ -72,7 +73,7 @@ python main.py --file "C:\path\to\file.xlsx" --table my_table --chunk-size 500 -
 
 Dry run mode
 
-The script now supports a safe dry run mode. When you run with `--dry-run` the tool will not connect to your database and will not perform any destructive operations. Instead it will read the Excel file, show cleaned column names, infer SQL types, and print samples and progress for each chunk. This mode is useful to validate parsing and type inference without changing anything in your database.
+The script supports a safe dry run mode. When you run with `--dry-run` the tool will not connect to your database and will not perform any destructive operations. Instead it will read the Excel file, show cleaned column names, infer SQL types, and print samples and progress for each chunk. This mode is useful to validate parsing and type inference without changing anything in your database.
 
 How to perform a real import
 
