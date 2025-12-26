@@ -59,7 +59,7 @@ def infer_sql_type(series, col_name=None):
     if pd.api.types.is_bool_dtype(series) or s.apply(lambda x: isinstance(x, bool)).all():
         return types.BOOLEAN()
 
-    # Numeric checks (prioritize numbers so they aren't mistaken for datetimes)
+    # Numeric checks (prioritize numbers so they aren't mistaken for date times)
     # If pandas recognizes integer dtype
     if pd.api.types.is_integer_dtype(series) or (not s.empty and s.apply(lambda x: isinstance(x, (int, np.integer)) and not isinstance(x, bool)).all()):
         # Safely compute min/max and choose INTEGER or BIGINT depending on range.
@@ -84,7 +84,7 @@ def infer_sql_type(series, col_name=None):
     if pd.api.types.is_float_dtype(series) or s.apply(lambda x: isinstance(x, (float, np.floating))).all():
         return types.FLOAT()
 
-    # Only attempt to parse datetimes for object/string-like columns to avoid
+    # Only attempt to parse date times for object/string-like columns to avoid
     # interpreting numeric IDs as timestamps.
     if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
         coerced = pd.to_datetime(s, errors='coerce')
@@ -151,7 +151,7 @@ def get_table_name_popup_simple():
         sys.exit(1)
 
     # Clean table name
-    table_name = re.sub(r'[^\w]', '_', table_name).lower()
+    table_name = re.sub(r'\W', '_', table_name).lower()
     table_name = re.sub(r'_+', '_', table_name).strip('_')
 
     return table_name
@@ -176,7 +176,7 @@ def safe_to_sql(df_sub, engine, table_name, if_exists, dtype, param_threshold=20
         driver_name = None
     logger.info(f"safe_to_sql: engine dialect={dialect_name}, driver={driver_name}, rows={len(df_sub)}, cols={num_cols}, est_params={est}")
 
-    # For PostgreSQL, prefer COPY FROM STDIN (CSV) to avoid building massive parameterized statements
+    # For PostgresSQL, prefer COPY FROM STDIN (CSV) to avoid building massive parameterized statements
     if hasattr(engine, 'dialect') and getattr(engine.dialect, 'name', None) == 'postgresql' and len(df_sub) > 0:
         try:
             # If table needs to be (re)created, create an empty table with correct schema first
@@ -302,11 +302,12 @@ parser.add_argument('--chunk-size', type=int, default=1000, help='Row chunk size
 parser.add_argument('--force-replace', action='store_true', help='If set, drop the target table before importing to avoid schema conflicts')
 args = parser.parse_args()
 
-# If the user passed --dry-run, we will ignore that and perform a real import anyway.
-# This keeps the CLI backward-compatible but ensures the import actually writes to the DB.
-if getattr(args, 'dry_run', False):
-    logger.warning("--dry-run detected but will be ignored; performing real database writes.")
-    args.dry_run = False
+# Respect the --dry-run flag. When set, the script will skip database writes and only show actions.
+DRY_RUN = bool(getattr(args, 'dry_run', False))
+if DRY_RUN:
+    logger.info("--dry-run enabled: the script will skip database writes and any destructive database operations. No connection to the database will be attempted.")
+else:
+    logger.info("Running in normal mode: the script will write to the configured database unless you pass --dry-run.")
 
 # Determine excel file (CLI -> GUI)
 if args.file:
@@ -358,6 +359,19 @@ logger.info("="*60)
 logger.info(str(df.head(3)))
 logger.info("\n" + "="*60)
 
+# Determine table name early so force-replace and dry-run logic can access it
+if args.table:
+    # clean provided table name
+    table_name = re.sub(r'\W', '_', args.table).lower()
+    table_name = re.sub(r'_+', '_', table_name).strip('_')
+else:
+    if args.no_gui:
+        logger.error('No table name provided and GUI disabled. Exiting.')
+        sys.exit(1)
+    table_name = get_table_name_popup_simple()
+
+logger.info(f"Table name: {table_name}")
+
 # Check for problematic values
 logger.info("\nData Quality Check:")
 for col in df.columns:
@@ -392,70 +406,60 @@ for col in df.columns:
 
 logger.info("=" * 60)
 # Load environment variables from .env file
-load_dotenv()
+# Only load and connect to the database if we are not in dry run mode
+if not DRY_RUN:
+    load_dotenv()
 
-# Get database credentials from environment
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_PORT = os.getenv('DB_PORT', '5432')
-DB_NAME = os.getenv('DB_NAME')
-DB_USER = os.getenv('DB_USER', 'postgres')
-DB_PASSWORD = os.getenv('DB_PASSWORD')
+    # Get database credentials from environment
+    DB_HOST = os.getenv('DB_HOST', 'localhost')
+    DB_PORT = os.getenv('DB_PORT', '5432')
+    DB_NAME = os.getenv('DB_NAME')
+    DB_USER = os.getenv('DB_USER', 'postgres')
+    DB_PASSWORD = os.getenv('DB_PASSWORD')
 
-if not DB_NAME or not DB_PASSWORD:
-    raise ValueError("DB_NAME and DB_PASSWORD must be set in .env file")
+    if not DB_NAME or not DB_PASSWORD:
+        raise ValueError("DB_NAME and DB_PASSWORD must be set in .env file")
 
-# Database connection (LocalHost:postgresql)
-connection_string = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    # Database connection (LocalHost:postgresql)
+    connection_string = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-logger.info(f"\nConnecting to PostgresSQL database...")
-try:
-    engine = create_engine(connection_string)
+    logger.info(f"\nConnecting to PostgresSQL database...")
+    try:
+        engine = create_engine(connection_string)
 
-    # Test connection
-    with engine.connect() as conn:
-        logger.info("✓ Successfully connected to PostgresSQL!")
-except Exception as e:
-    logger.error(f"✗ Connection failed: {e}")
-    raise
-
-# Load in chunks (better for large files)
-chunk_size = args.chunk_size or 1000
-total_loaded = 0
-
-logger.info(f"\nStarting data load to database")
-
-# Determine table name (CLI -> GUI)
-if args.table:
-    # clean provided table name
-    table_name = re.sub(r'[^\w]', '_', args.table).lower()
-    table_name = re.sub(r'_+', '_', table_name).strip('_')
+        # Test connection
+        with engine.connect() as conn:
+            logger.info("✓ Successfully connected to PostgresSQL!")
+    except Exception as e:
+        logger.error(f"✗ Connection failed: {e}")
+        raise
 else:
-    if args.no_gui:
-        logger.error('No table name provided and GUI disabled. Exiting.')
-        sys.exit(1)
-    table_name = get_table_name_popup_simple()
-
-logger.info(f"Table name: {table_name}")
-logger.info(f"Chunk size: {chunk_size}")
+    engine = None
 
 # If user requested force replace, drop the existing table first to avoid datatype mismatch
 if args.force_replace:
-    try:
-        logger.info(f"--force-replace enabled: dropping table {table_name} if it exists...")
-        # Handle optional schema.table
-        if '.' in table_name:
-            schema, tbl = table_name.split('.', 1)
-            drop_sql = text(f'DROP TABLE IF EXISTS "{schema}"."{tbl}" CASCADE')
-        else:
-            drop_sql = text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
-        with engine.begin() as conn:
-            conn.execute(drop_sql)
-        logger.info(f"Dropped table {table_name} (if it existed)")
-    except Exception as drop_e:
-        logger.error(f"Failed to drop table {table_name}: {drop_e}")
-        raise
+    if DRY_RUN:
+        logger.info(f"--force-replace requested but running in dry-run mode. The existing table will not be dropped. To actually drop the table and import, run without --dry-run.")
+    else:
+        try:
+            logger.info(f"--force-replace enabled: dropping table {table_name} if it exists...")
+            # Handle optional schema.table
+            if '.' in table_name:
+                schema, tbl = table_name.split('.', 1)
+                drop_sql = text(f'DROP TABLE IF EXISTS "{schema}"."{tbl}" CASCADE')
+            else:
+                drop_sql = text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
+            with engine.begin() as conn:
+                conn.execute(drop_sql)
+            logger.info(f"Dropped table {table_name} (if it existed)")
+        except Exception as drop_e:
+            logger.error(f"Failed to drop table {table_name}: {drop_e}")
+            raise
 
 try:
+    total_loaded = 0
+    chunk_size = args.chunk_size
+
     for i in range(0, len(df), chunk_size):
         chunk = df[i:i + chunk_size]
 
@@ -464,7 +468,7 @@ try:
 
         logger.info(f"\nProcessing chunk {i//chunk_size + 1} (rows {i} to {i+len(chunk)-1})...")
 
-        if args.dry_run:
+        if DRY_RUN:
             logger.info("Dry-run enabled - skipping database write. Showing chunk sample:")
             logger.info(str(chunk.head(3)))
             total_loaded += len(chunk)
@@ -477,7 +481,7 @@ try:
             num_rows = len(chunk)
             estimated_params = num_columns * num_rows
 
-            # PostgreSQL has a hard limit on the number of parameters in a prepared statement (~65535)
+            # PostgresSQL has a hard limit on the number of parameters in a prepared statement (~65535)
             # Use a conservative threshold to stay well below the DB/driver limits.
             PARAM_THRESHOLD = 20000
 
