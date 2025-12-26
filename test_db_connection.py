@@ -17,7 +17,7 @@ try:
     engine = create_engine(connection_string)
 
     with engine.connect() as conn:
-        print("Successfully connected to PostgreSQL")
+        print("Successfully connected to PostgreSQL Database")
         print()
 
 except Exception as e:
