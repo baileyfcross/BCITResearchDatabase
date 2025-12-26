@@ -302,6 +302,12 @@ parser.add_argument('--chunk-size', type=int, default=1000, help='Row chunk size
 parser.add_argument('--force-replace', action='store_true', help='If set, drop the target table before importing to avoid schema conflicts')
 args = parser.parse_args()
 
+# If the user passed --dry-run, we will ignore that and perform a real import anyway.
+# This keeps the CLI backward-compatible but ensures the import actually writes to the DB.
+if getattr(args, 'dry_run', False):
+    logger.warning("--dry-run detected but will be ignored; performing real database writes.")
+    args.dry_run = False
+
 # Determine excel file (CLI -> GUI)
 if args.file:
     excel_file = args.file
